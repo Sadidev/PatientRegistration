@@ -12,6 +12,7 @@ class PatientDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100))
     email = Column(String(100), unique=True, index=True)
+    address = Column(String(100))
     phone = Column(String(20))
     document_path = Column(String(255), nullable=True)
 
@@ -19,12 +20,14 @@ class PatientCreate(BaseModel):
     name: constr(min_length=2, max_length=100)
     email: EmailStr
     phone: constr(pattern=r'^\+?1?\d{9,15}$')
+    address: constr(max_length=100)
 
 class PatientResponse(BaseModel):
     id: int
     name: str
     email: str
     phone: str
+    address: str
     document_path: Optional[str]
 
     class Config:

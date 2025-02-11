@@ -8,6 +8,8 @@ from pathlib import Path
 import secrets
 from pydantic import ValidationError
 
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI(title="Patient Registration API")
 
 # Constants for file upload
@@ -63,7 +65,8 @@ async def create_patient(
     db_patient = models.PatientDB(
         name=patient.name,
         email=patient.email,
-        phone=patient.phone
+        phone=patient.phone,
+        address=patient.address
     )
     
     try:
