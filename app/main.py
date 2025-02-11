@@ -1,21 +1,54 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
+import asyncio
+import secrets
+import logging
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from pydantic import ValidationError
 from typing import List
+from pathlib import Path
 from . import models
 from .database import SessionLocal, engine, Base
-import asyncio
-from pathlib import Path
-import secrets
-from pydantic import ValidationError
-
-Base.metadata.create_all(bind=engine)
-
-app = FastAPI(title="Patient Registration API")
 
 # Constants for file upload
 UPLOAD_DIR = Path("uploads")
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="Patient Registration API")
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Handle Pydantic Validation Errors
+@app.exception_handler(ValidationError)
+async def validation_exception_handler(request: Request, exc: ValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
+
+# Handle SQLAlchemy Integrity Errors
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError):
+    logger.error(f"Integrity error: {exc}")
+    return JSONResponse(
+        status_code=400,
+        content={"detail": "Database integrity error. Maybe a duplicate entry?"},
+    )
+
+# Handle General Errors
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unexpected error: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An unexpected error occurred."},
+    )
 
 # Create uploads directory if it doesn't exist
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -62,14 +95,18 @@ async def create_patient(
     document: UploadFile = File(None),
     db: Session = Depends(get_db)
 ):
-    db_patient = models.PatientDB(
-        name=patient.name,
-        email=patient.email,
-        phone=patient.phone,
-        address=patient.address
-    )
     
     try:
+        # Check for duplicate emails
+        existing_patient = db.query(models.PatientDB).filter_by(email=patient.email).first()
+        logger.error(f"Email exists: {existing_patient}")
+
+        if existing_patient:
+            logger.error(f"Email exists")
+            raise HTTPException(status_code=400, detail="Email already exists")
+
+        db_patient = models.PatientDB(**patient.model_dump())
+
         if document:
             document_path = await save_upload_file(document)
             db_patient.document_path = document_path
@@ -82,9 +119,11 @@ async def create_patient(
         asyncio.create_task(send_confirmation_email(patient.email))
         
         return db_patient
+    
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error creating patient: {e}")
+        return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
 
 @app.get("/patients/", response_model=List[models.PatientResponse])
 def get_patients(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
