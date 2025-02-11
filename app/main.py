@@ -1,59 +1,20 @@
-import asyncio
-import secrets
-import logging
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request
 from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from pydantic import ValidationError
-from typing import List
-from pathlib import Path
-from . import models
+from typing import List, Annotated
+import asyncio
+import logging
+from datetime import datetime
+
 from .database import SessionLocal, engine, Base
+from . import models
+from .services import email_service, file_service, patient_service
 
-# Constants for file upload
-UPLOAD_DIR = Path("uploads")
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+# Initialize settings from config
+settings = models.Settings()
 
-# Create uploads directory if it doesn't exist
-UPLOAD_DIR.mkdir(exist_ok=True)
-
-Base.metadata.create_all(bind=engine)
-
-app = FastAPI(title="Patient Registration API")
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Handle Pydantic Validation Errors
-@app.exception_handler(ValidationError)
-async def validation_exception_handler(request: Request, exc: ValidationError):
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors()},
-    )
-
-# Handle SQLAlchemy Integrity Errors
-@app.exception_handler(IntegrityError)
-async def integrity_error_handler(request: Request, exc: IntegrityError):
-    logger.error(f"Integrity error: {exc}")
-    return JSONResponse(
-        status_code=400,
-        content={"detail": "Database integrity error. Maybe a duplicate entry?"},
-    )
-
-# Handle General Errors
-@app.exception_handler(Exception)
-async def generic_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unexpected error: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "An unexpected error occurred."},
-    )
-
-# Dependency to get DB session
 def get_db():
     db = SessionLocal()
     try:
@@ -61,78 +22,141 @@ def get_db():
     finally:
         db.close()
 
-async def send_confirmation_email(email: str):
-    # This would be replaced with your actual email sending logic
-    await asyncio.sleep(1)  # Simulate email sending
-    print(f"Confirmation email sent to {email}")
+# Setup logging configuration
+logging.config.dictConfig({
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        },
+    },
+    'handlers': {
+        'default': {
+            'level': 'INFO',
+            'formatter': 'standard',
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        '': {
+            'handlers': ['default'],
+            'level': 'INFO',
+            'propagate': True
+        },
+    }
+})
 
-async def save_upload_file(upload_file: UploadFile) -> str:
-    # Validate file size
-    contents = await upload_file.read()
-    if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File too large")
-        
-    # Create secure random filename
-    file_extension = Path(upload_file.filename).suffix.lower()
-    if file_extension not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="File type not allowed")
-        
-    random_filename = f"{secrets.token_urlsafe(16)}{file_extension}"
-    file_path = UPLOAD_DIR / random_filename
+logger = logging.getLogger(__name__)
+
+# Create uploads directory
+settings.UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Initialize database
+Base.metadata.create_all(bind=engine)
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Patient Registration API",
+    description="API for managing patient registrations and documents",
+    version="1.0.0"
+)
+
+# Exception Handlers
+@app.exception_handler(ValidationError)
+async def validation_exception_handler(request: Request, exc: ValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError):
+    logger.error(f"Integrity error: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=400,
+        content={"detail": "Database integrity error occurred"},
+    )
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unexpected error: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An unexpected error occurred"},
+    )
+
+# Middleware for request logging
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = datetime.utcnow()
+    response = await call_next(request)
+    duration = (datetime.utcnow() - start_time).total_seconds()
     
-    # Save file
-    try:
-        with open(file_path, "wb") as f:
-            f.write(contents)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Could not save file")
-        
-    return f"/uploads/{random_filename}"
+    logger.info(
+        f"Method: {request.method} Path: {request.url.path} "
+        f"Status: {response.status_code} Duration: {duration:.3f}s"
+    )
+    return response
 
+# Routes
 @app.post("/patients/", response_model=models.PatientResponse)
 async def create_patient(
     patient: models.PatientCreate = Depends(),
     document: UploadFile = File(None),
     db: Session = Depends(get_db)
 ):
-    
     try:
-        # Check for duplicate emails
-        existing_patient = db.query(models.PatientDB).filter_by(email=patient.email).first()
-        logger.error(f"Email exists: {existing_patient}")
+        # Check for existing patient
+        if await patient_service.patient_exists(db, patient.email):
+            raise HTTPException(
+                status_code=400,
+                detail="Email already registered"
+            )
 
-        if existing_patient:
-            logger.error(f"Email exists")
-            raise HTTPException(status_code=400, detail="Email already exists")
-
+        # Create patient record
         db_patient = models.PatientDB(**patient.model_dump())
 
+        # Handle document upload
         if document:
-            document_path = await save_upload_file(document)
+            document_path = await file_service.save_file(
+                document,
+                settings.UPLOAD_DIR,
+                settings.MAX_FILE_SIZE,
+                settings.ALLOWED_EXTENSIONS
+            )
             db_patient.document_path = document_path
-        
+
+        # Save to database
         db.add(db_patient)
         db.commit()
         db.refresh(db_patient)
-        
-        # Asynchronously send confirmation email
-        asyncio.create_task(send_confirmation_email(patient.email))
-        
+
+        # Send confirmation email asynchronously
+        asyncio.create_task(
+            email_service.send_confirmation_email(patient.email)
+        )
+
         return db_patient
-    
+
+    except HTTPException as e:
+        raise e
     except Exception as e:
         db.rollback()
-        logger.error(f"Error creating patient: {e}")
-        return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
+        logger.error(f"Error creating patient: {e}", exc_info=True)
+        raise JSONResponse(status_code=e.status_code, content={"detail": e.detail})
 
 @app.get("/patients/", response_model=List[models.PatientResponse])
-def get_patients(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    patients = db.query(models.PatientDB).offset(skip).limit(limit).all()
-    return patients
+async def get_patients(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    return await patient_service.get_patients(db, skip, limit)
 
 @app.get("/uploads/{filename}")
 async def get_file(filename: str):
-    file_path = UPLOAD_DIR / filename
+    file_path = settings.UPLOAD_DIR / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(file_path)
