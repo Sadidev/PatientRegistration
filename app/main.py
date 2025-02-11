@@ -2,7 +2,7 @@ import asyncio
 import secrets
 import logging
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from pydantic import ValidationError
@@ -15,6 +15,9 @@ from .database import SessionLocal, engine, Base
 UPLOAD_DIR = Path("uploads")
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+# Create uploads directory if it doesn't exist
+UPLOAD_DIR.mkdir(exist_ok=True)
 
 Base.metadata.create_all(bind=engine)
 
@@ -50,9 +53,6 @@ async def generic_exception_handler(request: Request, exc: Exception):
         content={"detail": "An unexpected error occurred."},
     )
 
-# Create uploads directory if it doesn't exist
-UPLOAD_DIR.mkdir(exist_ok=True)
-
 # Dependency to get DB session
 def get_db():
     db = SessionLocal()
@@ -87,7 +87,7 @@ async def save_upload_file(upload_file: UploadFile) -> str:
     except Exception as e:
         raise HTTPException(status_code=500, detail="Could not save file")
         
-    return str(file_path)
+    return f"/uploads/{random_filename}"
 
 @app.post("/patients/", response_model=models.PatientResponse)
 async def create_patient(
@@ -129,3 +129,10 @@ async def create_patient(
 def get_patients(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     patients = db.query(models.PatientDB).offset(skip).limit(limit).all()
     return patients
+
+@app.get("/uploads/{filename}")
+async def get_file(filename: str):
+    file_path = UPLOAD_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path)
