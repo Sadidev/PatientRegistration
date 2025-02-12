@@ -17,6 +17,17 @@ Ensure you have the following installed:
 - [Docker](https://www.docker.com/get-started)
 - [Docker Compose](https://docs.docker.com/compose/install/)
 
+For the mailling service to work, it is also necessary to create a .env file with your Mailtrap credentials
+
+```
+# .env (create this file in your project root)
+MAIL_USERNAME=your_mailtrap_username
+MAIL_PASSWORD=your_mailtrap_password
+MAIL_FROM=noreply@yourapp.com
+MAIL_SERVER=smtp.mailtrap.io
+MAIL_PORT=587
+```
+
 ## Getting Started
 
 ### Running the Project

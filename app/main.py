@@ -3,17 +3,17 @@ from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from pydantic import ValidationError
-from typing import List, Annotated
+from typing import List
 import asyncio
 import logging
 from datetime import datetime
 
 from .database import SessionLocal, engine, Base
 from . import models
-from .services import email_service, file_service, patient_service
+from .services import file_service, patient_service
+from .services.email_service import email_instance
+from .config import settings
 
-# Initialize settings from config
-settings = models.Settings()
 
 def get_db():
     db = SessionLocal()
@@ -134,17 +134,24 @@ async def create_patient(
 
         # Send confirmation email asynchronously
         asyncio.create_task(
-            email_service.send_confirmation_email(patient.email)
+            email_instance.send_patient_confirmation(
+                email=patient.email,
+                patient_name=patient.name
+            )
         )
 
         return db_patient
 
     except HTTPException as e:
         raise e
+    
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+    
     except Exception as e:
         db.rollback()
         logger.error(f"Error creating patient: {e}", exc_info=True)
-        raise JSONResponse(status_code=e.status_code, content={"detail": e.detail})
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/patients/", response_model=List[models.PatientResponse])
 async def get_patients(

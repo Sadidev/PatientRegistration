@@ -1,18 +1,11 @@
 from sqlalchemy import Column, Integer, String
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
-from pathlib import Path
-from app.database import Base, engine
+
+from .database import Base, engine
+from .config import settings
 
 Base.metadata.create_all(bind=engine)
-
-class Settings(BaseModel):
-    UPLOAD_DIR: Path = Path("uploads")
-    ALLOWED_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png"}
-    MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
-    
-    class Config:
-        env_file = ".env"
 
 class PatientDB(Base):
     __tablename__ = "patients"
