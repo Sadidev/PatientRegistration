@@ -2,12 +2,14 @@ from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from pydantic import EmailStr
 import logging
 from jinja2 import Environment, select_autoescape, FileSystemLoader
+from typing import Dict, Any
 
+from .base import NotificationService
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-class EmailService:
+class EmailService(NotificationService):
     def __init__(self):
         self.conf = ConnectionConfig(
             MAIL_USERNAME=settings.MAIL_USERNAME,
@@ -27,29 +29,23 @@ class EmailService:
             autoescape=select_autoescape(['html', 'xml'])
         )
 
-    async def send_patient_confirmation(self, email: EmailStr, patient_name: str) -> None:
+    async def send_notification(self, recipient: str, template_name: str, data: Dict[str, Any]) -> None:
         try:
-            # Get the template
-            template = self.template_env.get_template("confirmation.html")
-            
-            # Render the template with context
-            html_content = template.render(
-                patient_name=patient_name,
-                confirmation_link=f"https://yourapp.com/confirm?email={email}"
-            )
+            template = self.template_env.get_template(f"email/{template_name}.html")
+            html_content = template.render(**data)
 
             message = MessageSchema(
-                subject="Welcome to Our Medical Practice",
-                recipients=[email],
+                subject=data.get('subject', 'Notification'),
+                recipients=[recipient],
                 body=html_content,
                 subtype="html"
             )
 
             await self.fast_mail.send_message(message)
-            logger.info(f"Confirmation email sent to {email}")
+            logger.info(f"Email sent to {recipient}")
             
         except Exception as e:
-            logger.error(f"Failed to send confirmation email to {email}: {e}")
+            logger.error(f"Failed to send email to {recipient}: {e}")
             raise
 
 # Create a singleton instance

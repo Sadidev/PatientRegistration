@@ -11,7 +11,7 @@ from datetime import datetime
 from .database import SessionLocal, engine, Base
 from . import models
 from .services import file_service, patient_service
-from .services.email_service import email_instance
+from app.services.notifications.notification_manager import NotificationManager, NotificationType
 from .config import settings
 
 
@@ -48,6 +48,8 @@ logging.config.dictConfig({
 })
 
 logger = logging.getLogger(__name__)
+
+notification_manager = NotificationManager()
 
 # Create uploads directory
 settings.UPLOAD_DIR.mkdir(exist_ok=True)
@@ -134,9 +136,10 @@ async def create_patient(
 
         # Send confirmation email asynchronously
         asyncio.create_task(
-            email_instance.send_patient_confirmation(
-                email=patient.email,
-                patient_name=patient.name
+            notification_manager.send_patient_confirmation(
+                NotificationType.EMAIL,
+                patient.email,
+                patient.name
             )
         )
 
